@@ -424,6 +424,7 @@ pub struct DebugAdapterConfig {
     #[serde(default)]
     pub args: Vec<String>,
     pub port_arg: Option<String>,
+    pub timeout: Option<u64>,
     pub templates: Vec<DebugTemplate>,
     #[serde(default)]
     pub quirks: DebuggerQuirks,

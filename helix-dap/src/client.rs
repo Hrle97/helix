@@ -32,6 +32,7 @@ pub struct Client {
     _process: Option<Child>,
     server_tx: UnboundedSender<Payload>,
     request_counter: AtomicU64,
+    request_timeout: u64,
     connection_type: Option<ConnectionType>,
     starting_request_args: Option<Value>,
     pub caps: Option<DebuggerCapabilities>,
@@ -57,14 +58,17 @@ impl Client {
         command: &str,
         args: Vec<&str>,
         port_arg: Option<&str>,
+        timeout: Option<u64>,
         id: usize,
     ) -> Result<(Self, UnboundedReceiver<Payload>)> {
         if command.is_empty() {
             return Result::Err(Error::Other(anyhow!("Command not provided")));
         }
         match (transport, port_arg) {
-            ("tcp", Some(port_arg)) => Self::tcp_process(command, args, port_arg, id).await,
-            ("stdio", _) => Self::stdio(command, args, id),
+            ("tcp", Some(port_arg)) => {
+                Self::tcp_process(command, args, port_arg, timeout, id).await
+            }
+            ("stdio", _) => Self::stdio(command, args, timeout, id),
             _ => Result::Err(Error::Other(anyhow!("Incorrect transport {}", transport))),
         }
     }
@@ -73,6 +77,7 @@ impl Client {
         rx: Box<dyn AsyncBufRead + Unpin + Send>,
         tx: Box<dyn AsyncWrite + Unpin + Send>,
         err: Option<Box<dyn AsyncBufRead + Unpin + Send>>,
+        timeout: Option<u64>,
         id: usize,
         process: Option<Child>,
     ) -> Result<(Self, UnboundedReceiver<Payload>)> {
@@ -84,6 +89,7 @@ impl Client {
             _process: process,
             server_tx,
             request_counter: AtomicU64::new(0),
+            request_timeout: timeout.or(20000),
             caps: None,
             connection_type: None,
             starting_request_args: None,
@@ -102,15 +108,24 @@ impl Client {
     pub async fn tcp(
         addr: std::net::SocketAddr,
         id: usize,
+        timeout: Option<u64>,
     ) -> Result<(Self, UnboundedReceiver<Payload>)> {
         let stream = TcpStream::connect(addr).await?;
         let (rx, tx) = stream.into_split();
-        Self::streams(Box::new(BufReader::new(rx)), Box::new(tx), None, id, None)
+        Self::streams(
+            Box::new(BufReader::new(rx)),
+            Box::new(tx),
+            None,
+            id,
+            timeout,
+            None,
+        )
     }
 
     pub fn stdio(
         cmd: &str,
         args: Vec<&str>,
+        timeout: Option<u64>,
         id: usize,
     ) -> Result<(Self, UnboundedReceiver<Payload>)> {
         // Resolve path to the binary
@@ -140,6 +155,7 @@ impl Client {
                 None => None,
             },
             id,
+            timeout,
             Some(process),
         )
     }
@@ -166,6 +182,7 @@ impl Client {
         cmd: &str,
         args: Vec<&str>,
         port_format: &str,
+        timeout: Option<u64>,
         id: usize,
     ) -> Result<(Self, UnboundedReceiver<Payload>)> {
         let port = Self::get_port().await.unwrap();
@@ -195,6 +212,7 @@ impl Client {
             Box::new(tx),
             None,
             id,
+            timeout,
             Some(process),
         )
     }
@@ -247,6 +265,7 @@ impl Client {
     {
         let server_tx = self.server_tx.clone();
         let id = self.next_request_id();
+        let timeout = self.request_timeout;
 
         async move {
             use std::time::Duration;
@@ -267,8 +286,8 @@ impl Client {
                 .send(Payload::Request(req))
                 .map_err(|e| Error::Other(e.into()))?;
 
-            // TODO: specifiable timeout, delay other calls until initialize success
-            timeout(Duration::from_secs(20), callback_rx.recv())
+            // TODO: delay other calls until initialize success
+            timeout(Duration::from_secs(timeout), callback_rx.recv())
                 .await
                 .map_err(|_| Error::Timeout(id))? // return Timeout
                 .ok_or(Error::StreamClosed)?

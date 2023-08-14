@@ -147,6 +147,7 @@ pub fn dap_start_impl(
             &config.command,
             config.args.iter().map(|arg| arg.as_str()).collect(),
             config.port_arg.as_deref(),
+            config.timeout,
             0,
         )),
     };
